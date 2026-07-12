@@ -254,5 +254,11 @@ def fetch_enka_data(uid):
 
 if __name__ == "__main__":
     import json
-    res = fetch_enka_data("158067075")
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import config
+
+    res = fetch_enka_data(config.DEFAULT_UID)
     print(json.dumps(res, ensure_ascii=False, indent=4))
