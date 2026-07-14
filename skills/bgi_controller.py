@@ -3,6 +3,7 @@ import json
 import subprocess
 import config
 from api import feishu_api
+from skills.config_transaction import ConfigTransactionError, JsonConfigTransaction
 
 
 def execute_bgi_task(bgi_cmd, decision_lower, store, open_id, uid):
@@ -18,6 +19,7 @@ def execute_bgi_task(bgi_cmd, decision_lower, store, open_id, uid):
 
         config_path = config.BGI_ONE_DRAGON_CONFIG
         map_config_path = config.BGI_MAP_CONFIG
+        transaction = JsonConfigTransaction(config.BGI_BACKUP_DIR)
 
         if os.path.exists(config_path):
             with open(config_path, "r", encoding="utf-8") as f:
@@ -49,8 +51,7 @@ def execute_bgi_task(bgi_cmd, decision_lower, store, open_id, uid):
 
                     global_config["autoLeyLineOutcropConfig"]["leyLineOutcropType"] = target_domain
 
-                    with open(global_config_path, "w", encoding="utf-8") as f:
-                        json.dump(global_config, f, ensure_ascii=False, indent=4)
+                    transaction.stage_json(global_config_path, global_config, "global_config")
                     print(f"🌍 全局配置已更新：今日地脉目标锁定为【{target_domain}】")
                 else:
                     print(f"⚠️ 找不到全局配置文件 {global_config_path}，无法设置地脉种类！")
@@ -103,15 +104,16 @@ def execute_bgi_task(bgi_cmd, decision_lower, store, open_id, uid):
                 # 🌟 修复：不再暴力建文件夹！先检查外挂脚本的根基在不在
                 boss_dir = os.path.dirname(boss_config_path)
                 if os.path.exists(boss_dir):
-                    with open(boss_config_path, "w", encoding="utf-8") as f:
-                        json.dump(boss_data, f, ensure_ascii=False, indent=4)
+                    transaction.stage_json(boss_config_path, boss_data, "boss_config")
                         
                     display_team = user_team if user_team else "当前驻场队伍"
                     print(f"👹 Boss 模块接管：已生成 {target_domain} 的讨伐配置（队伍: '{display_team}', 策略: '{user_strategy}'）。")
                 else:
                     # 如果连文件夹都没有，说明他根本没下载这个脚本，或者路径不对
-                    err_msg = "❌ 严重错误：未找到 Boss 脚本的运行环境！请先在 BetterGI 中订阅《批量讨伐角色养成材料BOSS》脚本，并至少手动运行一次！"
-                    print(err_msg)
+                    raise ConfigTransactionError(
+                        "未找到 Boss 脚本的运行环境；请先在 BetterGI 中订阅《批量讨伐角色养成材料BOSS》脚本，"
+                        "并至少手动运行一次。"
+                    )
 
             # 覆写地图素材
             if gather_items and os.path.exists(map_config_path):
@@ -137,15 +139,21 @@ def execute_bgi_task(bgi_cmd, decision_lower, store, open_id, uid):
                             proj["status"] = "Disabled"
                             consecutive_disabled += 1
 
-                with open(map_config_path, "w", encoding="utf-8") as f:
-                    json.dump(map_data, f, ensure_ascii=False, indent=4)
+                transaction.stage_json(map_config_path, map_data, "map_materials")
 
                 print(f"🗺️ 地图素材路线已重置，共激活 {enabled_count} 条跑图路线 (含防闪退隔离带)。")
             else:
                 bgi_config["TaskEnabledList"]["地图素材"] = False
 
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(bgi_config, f, ensure_ascii=False, indent=4)
+            transaction.stage_json(config_path, bgi_config, "one_dragon")
+            transaction_result = transaction.commit()
+            changed_files = ", ".join(path.name for path in transaction_result.changed_files)
+            transaction_notice = (
+                f"🧾 配置事务已提交：{changed_files}\n"
+                f"🗂️ 备份与 Diff：{transaction_result.backup_dir}"
+            )
+            print(transaction_notice)
+            feishu_api.send_feishu_msg(open_id, transaction_notice)
 
             print(f"\n📝 BetterGI 配置已动态覆写！今日死磕：{target_domain}，顺路采集：{gather_str}")
 

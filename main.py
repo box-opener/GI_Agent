@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 import config
 from brain import memory_manager, llm_brain
 from skills import bgi_controller
+from skills.config_recovery import list_transactions, load_transaction, restore_transaction
+from skills.config_transaction import ConfigTransactionError
 from skills.env_reader import fetch_enka_data
 
 load_dotenv()
@@ -22,6 +24,65 @@ def refresh_env_context(uid):
     env_data = fetch_enka_data(uid)
     data_str = json.dumps(env_data, ensure_ascii=False)
     return f"以下是玩家 UID {uid} 的最新展柜数据（JSON）：\n{data_str}"
+
+def handle_rollback_command(user_input):
+    """Handle local BetterGI configuration recovery without involving the LLM."""
+    parts = user_input.strip().split(maxsplit=1)
+    command = parts[0] if parts else ""
+    supplied_id = parts[1] if len(parts) == 2 else ""
+    if command.lower() != "rollback":
+        return False
+
+    transaction_id = supplied_id.strip()
+    transactions = list_transactions(config.BGI_BACKUP_DIR)
+    if not transactions:
+        print("没有找到可用的 BetterGI 配置事务记录。")
+        return True
+
+    if not transaction_id:
+        print("\n可恢复的 BetterGI 配置事务：")
+        for item in transactions:
+            print(
+                f"- {item['id']} | 状态: {item['status']} | "
+                f"文件数: {item['updates']} | 时间: {item['created_at']}"
+            )
+        transaction_id = input("输入要恢复的事务 ID；直接回车取消：").strip()
+        if not transaction_id:
+            print("已取消配置恢复。")
+            return True
+
+    try:
+        transaction_dir, manifest = load_transaction(config.BGI_BACKUP_DIR, transaction_id)
+    except ConfigTransactionError as exc:
+        print(f"无法读取恢复记录：{exc}")
+        return True
+
+    updates = manifest.get("updates", [])
+    print(f"\n将恢复到事务 {transaction_dir.name} 执行前的 BetterGI 本地配置：")
+    for update in updates:
+        print(f"- {update.get('label', 'unknown')}: {update.get('path', 'unknown')}")
+    print("注意：此操作只恢复 BetterGI 配置，不会撤销已经发生的游戏内操作。")
+    print("建议先关闭 BetterGI，避免它同时写入配置文件。")
+
+    confirmation = input("确认恢复请输入 RESTORE；其他任意输入取消：").strip()
+    if confirmation != "RESTORE":
+        print("已取消配置恢复。")
+        return True
+
+    try:
+        result = restore_transaction(config.BGI_BACKUP_DIR, transaction_id)
+    except ConfigTransactionError as exc:
+        print(f"配置恢复失败：{exc}")
+        return True
+    except Exception as exc:
+        print(f"配置恢复发生未预期错误：{exc}")
+        return True
+
+    restored_names = ", ".join(path.name for path in result.restored_files)
+    print(f"配置恢复完成：{restored_names}")
+    print(f"本次恢复的备份与 Diff：{result.backup_dir}")
+    return True
+
 
 def main():
     print("🚀 原神智能体 CLI 终端版启动中...")
@@ -62,6 +123,7 @@ def main():
     print("✨ Agent 终端模式已准备就绪！")
     print("命令：exit 退出 | clear 清空记忆 | refresh 刷新展柜上下文 | history 查看历史")
     print("="*40 + "\n")
+    print("配置恢复命令：rollback [事务ID]（只恢复 BetterGI 本地配置）\n")
 
     if not messages:
         opening = "请基于当前展柜数据，先给我今天最优先的一条养成建议。"
@@ -162,6 +224,9 @@ def main():
                             continue
                             
                         decision_lower = user_decision.lower()
+
+                        if handle_rollback_command(user_decision):
+                            continue
                         
                         if decision_lower in ['exit', 'quit', '退出']:
                             print("👋 记忆已保存，再见！")
@@ -199,6 +264,9 @@ def main():
             user_input = input("👤 旅行者 (你): ").strip()
 
             if not user_input:
+                continue
+
+            if handle_rollback_command(user_input):
                 continue
 
             if user_input.lower() in ['exit', 'quit', '退出']:
